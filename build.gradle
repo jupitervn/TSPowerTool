@@ -26,6 +26,8 @@ dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib-jre8:$kotlin_version"
 //    compile "com.squareup.okio:okio:1.13.0"
     compile "io.reactivex:rxnetty-tcp:0.5.2"
+    compile "org.controlsfx:controlsfx-samples:8.40.12"
+    compile "org.jgrapht:jgrapht-core:1.0.1"
 }
 
 compileKotlin {
