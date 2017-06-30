@@ -13,8 +13,7 @@ import javafx.collections.ObservableList
 import org.jgrapht.alg.shortestpath.DijkstraShortestPath
 import org.jgrapht.graph.DefaultDirectedWeightedGraph
 import org.jgrapht.graph.DefaultWeightedEdge
-import org.jgrapht.graph.DirectedWeightedMultigraph
-import org.jgrapht.graph.WeightedMultigraph
+import rx.schedulers.Schedulers
 import rx.subjects.PublishSubject
 import tornadofx.*
 import vn.jupiter.tsonline.auto.data.*
@@ -33,6 +32,7 @@ class PacketReceivedEvent(val packet: Packet) : FXEvent()
 class PacketSentEvent(val packet: SendablePacket) : FXEvent()
 
 class CharReadyEvent(val tsChar: TSChar)
+
 
 data class TSCharItem(val id: Int)
 //data class TS
@@ -54,7 +54,8 @@ val receivedPacketRegistry = mapOf<Int, KClass<out Packet>>(
         0x03 to PlayerOnlinePacket::class,
         0x1808 to PlayerUpdatePacket::class,
         0x0B0A to BattleStartedPacket::class,
-        0x0B00 to BattleStopPacket::class
+        0x0B00 to BattleStopPacket::class,
+        0x1407 to WarpSuccessPacket::class
 )
 
 val sentPacketRegistry = mapOf<Int, KClass<out SendablePacket>>(
@@ -78,10 +79,9 @@ class AppController : Controller() {
     val proxyServerIP = "127.0.0.1"
     val proxyPort = 6414
     private lateinit var server: TcpServer<ByteBuf, ByteBuf>
+
     private val packetProcessor = CombinedTSPacketHandler()
     private val manualSendPacketPublisher = PublishSubject.create<SendablePacket>()
-    private val packetStream = PublishSubject.create<Packet>()
-
 
     val mapList = FXCollections.observableMap<Int, MapData>(TreeMap())
     val mapGraph = DefaultDirectedWeightedGraph<Int, DefaultWeightedEdge>(DefaultWeightedEdge::class.java)
@@ -100,78 +100,117 @@ class AppController : Controller() {
                 return false
             }
         })
-        packetProcessor.addPacketHandler(object : TSPacketHandler {
-            override fun onPacketProcessed(packet: Packet): Boolean {
-                packetStream.onNext(packet)
-                return false
-            }
-        })
-
-        packetStream
-                .onBackpressureBuffer(1000)
-                .observeOn(JavaFxScheduler.getInstance())
-                .subscribe({ packet ->
-                    when (packet) {
-                        is LoginPacket -> tsChar.id.set(packet.id)
-                        is PlayerAppearPacket -> {
-                            when {
-                                (packet.playerId == tsChar.id.get()) -> {
-                                    tsChar.mapId.set(packet.mapId)
-                                    tsChar.x.set(packet.x)
-                                    tsChar.y.set(packet.y)
-                                    if (walkDirectionsQueue.isNotEmpty()) {
-                                        val currentWarpStep = walkDirectionsQueue.poll()
-                                        if (currentWarpStep.targetId == packet.mapId) {
-                                            val warpStep = walkDirectionsQueue.peek()
-                                            if (warpStep != null) {
-                                                sendPacket(WarpPacket(warpStep.warpId))
-                                            } else {
-                                                //Warp finish?
-                                            }
-                                        } else {
-                                            walkDirectionsQueue.clear()
-                                            targetWarpMapId?.let {
-                                                warpTo(it)
-                                            }
-                                        }
-                                    } else {
-                                        targetWarpMapId = null
-                                    }
-                                }
-                            }
-                        }
-                    }
-                })
         server = TcpServer.newServer(proxyPort)
-                .addChannelHandlerLast<ByteBuf, ByteBuf>("Send packet decoder", { TSPacketDecoder(packetProcessor, sentPacketRegistry, true) })
+                .enableWireLogging("Proxy", LogLevel.INFO)
+                .addChannelHandlerLast<ByteBuf, ByteBuf>("Send packet decoder", { TSPacketDecoder(sentPacketRegistry, true) })
                 .start({ serverConn ->
                     println("Got new connection $serverConn ${Thread.currentThread()}")
                     val client = TcpClient.newClient(targetServerIP, targetPort)
-                            .enableWireLogging("proxy-server_log", LogLevel.INFO)
-                            .addChannelHandlerLast<ByteBuf, ByteBuf>("Receive packet decoder", { TSPacketDecoder(packetProcessor, receivedPacketRegistry) })
+                            .enableWireLogging("Send", LogLevel.INFO)
+                            .addChannelHandlerLast<ByteBuf, ByteBuf>("Receive packet decoder", { TSPacketDecoder(receivedPacketRegistry) })
                     val connReq = client.createConnectionRequest()
-                    serverConn.writeAndFlushOnEach(
-                            connReq.flatMap { clientConn ->
-                                clientConn
-                                        .writeAndFlushOnEach(serverConn.input
-                                                .mergeWith(manualSendPacketPublisher
-                                                        .doOnNext {
-                                                            println("Manually send $it")
-                                                            packetProcessor.onPacketProcessed(it)
-                                                        }
-                                                        .map { it -> it.toBytePacket() })
-                                                .doOnNext { it ->
-                                                    if (it.hasArray()) {
-                                                        println("Send ${it.array().toHex()}")
-                                                    }
+                    //Write back to Alogin by using client's input.
+                    serverConn.writeAndFlushOnEach(connReq
+                            .flatMap { clientConn ->
+                                //Send to server by using proxy connection's input merge with manual send publisher
+                                clientConn.writeAndFlushOnEach(
+                                        serverConn.input
+                                                .observeOn(JavaFxScheduler.getInstance())
+                                                .filter { packet ->
+                                                    onPacketSent(packet)
                                                 }
-                                        )
+                                                .observeOn(Schedulers.computation())
+                                                .map { buffer ->
+                                                    for (i in 0..(buffer.readableBytes() - 1)) {
+                                                        buffer.setByte(buffer.readerIndex() + i, buffer.getByte(buffer.readerIndex() + i).toInt().xor(0xAD))
+                                                    }
+                                                    buffer
+                                                }
+                                                .doOnError {
+                                                    it.printStackTrace()
+                                                }
+                                                .mergeWith(manualSendPacketPublisher.map { it ->
+                                                    it.toBytePacket()
+                                                }))
                                         .cast(ByteBuf::class.java)
                                         .mergeWith(clientConn.input)
                             }
+                            .observeOn(JavaFxScheduler.getInstance())
+                            .filter { packet ->
+                                onPacketReceived(packet)
+                            }
+                            .observeOn(Schedulers.computation())
+                            .map { buffer ->
+                                for (i in 0..(buffer.readableBytes() - 1)) {
+                                    buffer.setByte(buffer.readerIndex() + i, buffer.getByte(buffer.readerIndex() + i).toInt().xor(0xAD))
+                                }
+                                buffer
+                            }.doOnError {
+                                it.printStackTrace()
+                            }
+
                     )
 
                 })
+    }
+
+    private fun onPacketSent(bytePacket: ByteBuf?): Boolean? {
+        val packet = bytePacket?.splitPacket(sentPacketRegistry, true)
+        if (packet != null) {
+            fire(PacketSentEvent(packet as SendablePacket))
+        }
+        return true
+    }
+
+    private fun onPacketReceived(bytePacket: ByteBuf?): Boolean? {
+        val packet = bytePacket?.splitPacket(receivedPacketRegistry)
+        if (packet != null) {
+            fire(PacketReceivedEvent(packet))
+        }
+        when (packet) {
+            is LoginPacket -> {
+                resetData(packet)
+            }
+            is PlayerAppearPacket -> {
+                when {
+                    (packet.playerId == tsChar.id.get()) -> {
+                        tsChar.mapId.set(packet.mapId)
+                        tsChar.x.set(packet.x)
+                        tsChar.y.set(packet.y)
+                        if (walkDirectionsQueue.isNotEmpty()) {
+                            val currentWarpStep = walkDirectionsQueue.poll()
+                            if (currentWarpStep.targetId == packet.mapId) {
+                                val warpStep = walkDirectionsQueue.peek()
+                                if (warpStep != null) {
+                                    println("Warp next to $warpStep")
+                                    sendPacket(WarpPacket(warpStep.warpId))
+                                } else {
+                                    //Warp finish?
+                                }
+                            } else {
+                                walkDirectionsQueue.clear()
+                                targetWarpMapId?.let {
+                                    warpTo(it)
+                                }
+                            }
+                        } else {
+                            targetWarpMapId = null
+                        }
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+
+    private fun resetData(packet: LoginPacket) {
+        tsChar.id.set(packet.id)
+        tsChar.mapId.set(0)
+        tsChar.x.set(0)
+        tsChar.y.set(0)
+        targetWarpMapId = null
+        walkDirectionsQueue.clear()
     }
 
     fun cleanUp() {
@@ -179,13 +218,12 @@ class AppController : Controller() {
     }
 
     fun sendPacket(packet: SendablePacket) {
-        println("Send $packet from ${Thread.currentThread()}")
         manualSendPacketPublisher.onNext(packet)
     }
 
     fun loadStaticData() {
         val warpFile = File("WarpID.ini")
-        val warpDirectionRegExp = Regex("1\t([0-9]+)\t(\\d)\t([0-9]+)")
+        val warpDirectionRegExp = Regex("1\t([0-9]+)\t(\\d+)\t([0-9]+)")
         val mapDataRegExp = Regex("2\t([0-9]+)\t(.*)")
         if (warpFile.exists()) {
             mapList.clear()
@@ -201,8 +239,6 @@ class AppController : Controller() {
                             val edge = mapGraph.addEdge(sourceId, targetId)
                             if (edge != null) {
                                 mapGraph.setEdgeWeight(edge, warpId.toDouble())
-                            } else {
-                                println("Cannot add edge between $sourceId $targetId $warpId ${mapGraph.getEdge(sourceId, targetId)}")
                             }
                         }
                     }
@@ -227,6 +263,7 @@ class AppController : Controller() {
             val shortestPathAlgo = DijkstraShortestPath<Int, DefaultWeightedEdge>(mapGraph)
             val path = shortestPathAlgo.getPath(tsChar.mapId.get(), mapId)
             if (path != null && path.length > 0) {
+                println("Path found $path")
                 val graph = path.graph
                 path.edgeList.forEach {
                     val edgeWeight = graph.getEdgeWeight(it)
@@ -234,6 +271,8 @@ class AppController : Controller() {
                 }
                 val warpStep = walkDirectionsQueue.peek()
                 sendPacket(WarpPacket(warpStep.warpId))
+            } else {
+                println("No path was found")
             }
         }
         return walkSteps
@@ -257,27 +296,23 @@ class CombinedTSPacketHandler(var processorList: List<TSPacketHandler> = listOf<
     }
 }
 
-class TSPacketDecoder(val tsPacketHandler: TSPacketHandler?, val registry: Map<Int, KClass<out Packet>> = emptyMap<Int, KClass<out Packet>>(),
+class TSPacketDecoder(val registry: Map<Int, KClass<out Packet>> = emptyMap<Int, KClass<out Packet>>(),
                       val isDecodingSendPacket: Boolean = false) : ByteToMessageDecoder() {
     override fun channelActive(ctx: ChannelHandlerContext?) {
         super.channelActive(ctx)
-//        tsPacketHandler?.ctx = ctx
     }
 
     override fun channelInactive(ctx: ChannelHandlerContext?) {
         super.channelInactive(ctx)
-//        tsPacketHandler?.ctx = null
     }
 
     override fun decode(ctx: ChannelHandlerContext?, buffer: ByteBuf?, out: MutableList<Any>?) {
-        decodeBuffer(buffer, { byteBuf, tsPacket ->
-            if (tsPacketHandler?.onPacketProcessed(tsPacket)?.not() ?: false) {
-                out?.add(byteBuf)
-            }
+        decodeBuffer(buffer, { byteBuf ->
+            out?.add(byteBuf)
         })
     }
 
-    private fun decodeBuffer(buffer: ByteBuf?, packetProcessor: (ByteBuf, Packet) -> Unit) {
+    private fun decodeBuffer(buffer: ByteBuf?, packetProcessor: (ByteBuf) -> Unit) {
         buffer?.let {
             try {
                 val messageSize = buffer.readableBytes()
@@ -297,14 +332,11 @@ class TSPacketDecoder(val tsPacketHandler: TSPacketHandler?, val registry: Map<I
                     if (headerByte == 0xF4 && nextHeaderByte == 0x44) {
                         val packetSize = decodedBuffer.readShortLE().toInt()
                         if (packetSize <= decodedBuffer.readableBytes()) {
-                            val packet = splitPacket(decodedBuffer, packetSize)
-                            val originalPackets = buffer.readBytes(packetSize + 4)
-                            packetProcessor(originalPackets, packet)
-//                            println("On mitm packet received $packet==${packetSize + 4} ${decodedBuffer.readableBytes()}/${buffer.readableBytes()}")
+                            decodedBuffer.readerIndex(decodedBuffer.readerIndex() - 4)
+                            val transformedPacket = decodedBuffer.readBytes(packetSize + 4)
+                            packetProcessor(transformedPacket)
+                            buffer.readerIndex(buffer.readerIndex() + packetSize + 4)
                         } else {
-                            val remainingData = ByteArray(buffer.readableBytes())
-                            buffer.getBytes(buffer.readerIndex(), remainingData)
-//                            println("Packet is missing some part ${decodedBuffer.readableBytes()}/${buffer.readableBytes()} ${remainingData.toHex()}")
                             break
                         }
                     } else {
@@ -318,54 +350,56 @@ class TSPacketDecoder(val tsPacketHandler: TSPacketHandler?, val registry: Map<I
             }
         }
     }
+}
 
-    fun splitPacket(byteBuf: ByteBuf, packetSize: Int): Packet {
-        if (byteBuf.readableBytes() > 0) {
-            val oldReaderIndex = byteBuf.readerIndex()
-            val actionPrefix = byteBuf.readUnsignedByte().toInt()
-            val actionSuffix = if (byteBuf.readableBytes() > 0) byteBuf.readUnsignedByte().toInt() else null
-            val action = actionSuffix?.or(actionPrefix.shl(8)) ?: actionPrefix.shl(8)
-            val tsPacket = when {
-                registry.containsKey(action) -> {
-                    val byteArray = ByteArray(maxOf(packetSize - 2, 0))
-                    if (packetSize > 2) {
-                        byteBuf.getBytes(oldReaderIndex + 2, byteArray)
-                    }
-                    with(registry[action]!!.primaryConstructor!!) {
-                        if (parameters.isNotEmpty()) {
-                            call(byteArray)
-                        } else {
-                            call()
-                        }
-                    }
+fun ByteBuf.splitPacket(registry: Map<Int, KClass<out Packet>>, isDecodingSendPacket: Boolean = false): Packet {
+    if (readableBytes() > 0) {
+        val packetSize = readableBytes() - 4
+        val startReaderIndex = 4
+        readerIndex(startReaderIndex)
+        val actionPrefix = readUnsignedByte().toInt()
+        val actionSuffix = if (readableBytes() > 0) readUnsignedByte().toInt() else null
+        val action = actionSuffix?.or(actionPrefix.shl(8)) ?: actionPrefix.shl(8)
+        val tsPacket = when {
+            registry.containsKey(action) -> {
+                val byteArray = ByteArray(maxOf(packetSize - 2, 0))
+                if (packetSize > 2) {
+                    getBytes(startReaderIndex + 2, byteArray)
                 }
-                registry.containsKey(actionPrefix) -> {
-                    val byteArray = ByteArray(packetSize - 1)
-                    byteBuf.getBytes(oldReaderIndex + 1, byteArray)
-                    with(registry[actionPrefix]!!.primaryConstructor!!) {
-                        if (parameters.isNotEmpty()) {
-                            call(byteArray)
-                        } else {
-                            call()
-                        }
-                    }
-                }
-                else -> {
-                    val byteArray = ByteArray(packetSize)
-                    byteBuf.getBytes(oldReaderIndex, byteArray)
-                    if (isDecodingSendPacket) {
-                        RawSendablePacket(byteArray)
+                with(registry[action]!!.primaryConstructor!!) {
+                    if (parameters.isNotEmpty()) {
+                        call(byteArray)
                     } else {
-                        RawPacket(byteArray)
+                        call()
                     }
                 }
             }
-            byteBuf.readerIndex(oldReaderIndex + packetSize)
-            return tsPacket
-        } else {
-            println("Packet has no data")
-            throw error("Packet has no data")
+            registry.containsKey(actionPrefix) -> {
+                val byteArray = ByteArray(packetSize - 1)
+                getBytes(startReaderIndex + 1, byteArray)
+                with(registry[actionPrefix]!!.primaryConstructor!!) {
+                    if (parameters.isNotEmpty()) {
+                        call(byteArray)
+                    } else {
+                        call()
+                    }
+                }
+            }
+            else -> {
+                val byteArray = ByteArray(packetSize)
+                getBytes(startReaderIndex, byteArray)
+                if (isDecodingSendPacket) {
+                    RawSendablePacket(byteArray)
+                } else {
+                    RawPacket(byteArray)
+                }
+            }
         }
+        resetReaderIndex()
+        return tsPacket
+    } else {
+        println("Packet has no data")
+        throw error("Packet has no data")
     }
 }
 

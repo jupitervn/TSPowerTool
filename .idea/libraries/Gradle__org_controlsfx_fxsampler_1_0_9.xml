@@ -1,0 +1,11 @@
+<component name="libraryTable">
+  <library name="Gradle: org.controlsfx:fxsampler:1.0.9">
+    <CLASSES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/org.controlsfx/fxsampler/1.0.9/b15b747d006c3e2b0c318092a467cb715d0bc6f2/fxsampler-1.0.9.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES>
+      <root url="jar://$USER_HOME$/.gradle/caches/modules-2/files-2.1/org.controlsfx/fxsampler/1.0.9/43a5657b8cdc2cba9db6aea67cd570beee038263/fxsampler-1.0.9-sources.jar!/" />
+    </SOURCES>
+  </library>
+</component>

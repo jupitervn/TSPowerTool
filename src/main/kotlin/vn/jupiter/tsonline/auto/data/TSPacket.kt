@@ -418,4 +418,6 @@ class SendAttackPacket(array: ByteArray) : TSPacket(0x3201, array), SendablePack
 class RequestObservePacket()
 
 
+class WarpSuccessPacket() : TSPacket(0x1407)
+
 
