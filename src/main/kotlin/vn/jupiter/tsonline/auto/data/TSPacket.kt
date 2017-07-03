@@ -80,16 +80,101 @@ enum class RebornState(val value: Byte) {
 data class TSCharacterInfo(val id: Long, val name: String, val level: Short, val element: Ele, val reborn: RebornState,
                            val items: Array<TSCharItem> = emptyArray<TSCharItem>())
 
-interface Packet {
-    val command: Int?
-    val byteBuffer: ByteBuf
+sealed class Packet(val command: Int?, byteArray: ByteArray = ByteArray(0)) {
+    val byteBuffer: ByteBuf = Unpooled.copiedBuffer(byteArray)!!
 
-    fun packetDesc(): String {
+    override fun toString(): String {
+        return javaClass.simpleName + " " + packetDesc()
+    }
+
+    fun getRawIntLE(index: Int): Long {
+        return if (index <= byteBuffer.writerIndex() - 4) {
+            byteBuffer.getUnsignedIntLE(index)
+        } else {
+            0
+        }
+    }
+
+    fun getRawShortLE(index: Int): Int {
+        return if (index <= byteBuffer.writerIndex() - 2) {
+            byteBuffer.getUnsignedShortLE(index)
+        } else {
+            0
+        }
+    }
+
+    fun getRawByte(index: Int): Short {
+        return if (index <= byteBuffer.writerIndex() - 1) {
+            byteBuffer.getUnsignedByte(index)
+        } else {
+            0
+        }
+    }
+
+    fun getIntLE(index: Int): ReadOnlyProperty<Packet, Long> {
+        return object : ReadOnlyProperty<Packet, Long> {
+            override fun getValue(thisRef: Packet, property: KProperty<*>): Long {
+                if (index + 4 <= byteBuffer.writerIndex()) {
+                    return thisRef.byteBuffer.getUnsignedIntLE(index)
+                } else {
+                    return 0
+                }
+            }
+        }
+    }
+
+    fun getShortLE(index: Int): ReadOnlyProperty<Packet, Int> {
+        return object : ReadOnlyProperty<Packet, Int> {
+            override fun getValue(thisRef: Packet, property: KProperty<*>): Int {
+                if (index + 2 <= byteBuffer.writerIndex()) {
+                    return thisRef.byteBuffer.getUnsignedShortLE(index)
+                } else {
+                    return 0
+                }
+            }
+        }
+    }
+
+    fun getByte(index: Int): ReadOnlyProperty<Packet, Byte> {
+        return object : ReadOnlyProperty<Packet, Byte> {
+            override fun getValue(thisRef: Packet, property: KProperty<*>): Byte {
+                if (index + 1 <= byteBuffer.writerIndex()) {
+                    return thisRef.byteBuffer.getByte(index)
+                } else {
+                    return 0
+                }
+            }
+        }
+    }
+
+    fun getUnsignedByte(index: Int): ReadOnlyProperty<Packet, Short> {
+        return object : ReadOnlyProperty<Packet, Short> {
+            override fun getValue(thisRef: Packet, property: KProperty<*>): Short {
+                if (index + 1 <= byteBuffer.writerIndex()) {
+                    return thisRef.byteBuffer.getUnsignedByte(index)
+                } else {
+                    return 0
+                }
+            }
+        }
+    }
+
+    fun getString(index: Int, length: Int): ReadOnlyProperty<Packet, String> {
+        return object : ReadOnlyProperty<Packet, String> {
+            override fun getValue(thisRef: Packet, property: KProperty<*>): String {
+                if (index + length <= byteBuffer.writerIndex()) {
+                    return thisRef.byteBuffer.getCharSequence(index, length, Charset.forName("Big5")).toString()
+                } else {
+                    return "Cannot read string $index $length"
+                }
+            }
+        }
+    }
+
+    open fun packetDesc(): String {
         return byteBuffer.array().toHex()
     }
-}
 
-interface SendablePacket : Packet {
     fun toBytePacket(): ByteBuf {
         val commandLength = when {
             command == null -> 0
@@ -118,81 +203,14 @@ interface SendablePacket : Packet {
     }
 }
 
-sealed class TSPacket(override val command: Int?, byteArray: ByteArray = ByteArray(0)): Packet {
-    override val byteBuffer = Unpooled.copiedBuffer(byteArray)!!
+sealed class SendablePacket(command: Int?, byteArray: ByteArray = ByteArray(0)) : Packet(command, byteArray)
 
-    override fun toString(): String {
-        return javaClass.simpleName + " " + packetDesc()
-    }
+class RawSendablePacket(byteArray: ByteArray) : SendablePacket(null, byteArray)
+class RawPacket(byteArray: ByteArray) : Packet(null, byteArray)
 
+class InitPacket : SendablePacket(0x0, ByteArray(0))
 
-    fun getIntLE(index: Int): ReadOnlyProperty<TSPacket, Long> {
-        return object : ReadOnlyProperty<TSPacket, Long> {
-            override fun getValue(thisRef: TSPacket, property: KProperty<*>): Long {
-                if (index + 4 <= byteBuffer.writerIndex()) {
-                    return thisRef.byteBuffer.getUnsignedIntLE(index)
-                } else {
-                    return 0
-                }
-            }
-        }
-    }
-
-    fun getShortLE(index: Int): ReadOnlyProperty<TSPacket, Int> {
-        return object : ReadOnlyProperty<TSPacket, Int> {
-            override fun getValue(thisRef: TSPacket, property: KProperty<*>): Int {
-                if (index + 2 <= byteBuffer.writerIndex()) {
-                    return thisRef.byteBuffer.getUnsignedShortLE(index)
-                } else {
-                    return 0
-                }
-            }
-        }
-    }
-
-    fun getByte(index: Int): ReadOnlyProperty<TSPacket, Byte> {
-        return object : ReadOnlyProperty<TSPacket, Byte> {
-            override fun getValue(thisRef: TSPacket, property: KProperty<*>): Byte {
-                if (index + 2 <= byteBuffer.writerIndex()) {
-                    return thisRef.byteBuffer.getByte(index)
-                } else {
-                    return 0
-                }
-            }
-        }
-    }
-
-    fun getUnsignedByte(index: Int): ReadOnlyProperty<TSPacket, Short> {
-        return object : ReadOnlyProperty<TSPacket, Short> {
-            override fun getValue(thisRef: TSPacket, property: KProperty<*>): Short {
-                if (index + 2 <= byteBuffer.writerIndex()) {
-                    return thisRef.byteBuffer.getUnsignedByte(index)
-                } else {
-                    return 0
-                }
-            }
-        }
-    }
-
-    fun getString(index: Int, length: Int): ReadOnlyProperty<TSPacket, String> {
-        return object : ReadOnlyProperty<TSPacket, String> {
-            override fun getValue(thisRef: TSPacket, property: KProperty<*>): String {
-                if (index + length <= byteBuffer.writerIndex()) {
-                    return thisRef.byteBuffer.getCharSequence(index, length, Charset.forName("Big5")).toString()
-                } else {
-                    return "Cannot read string $index $length"
-                }
-            }
-        }
-    }
-}
-
-class RawSendablePacket(byteArray: ByteArray) : TSPacket(null, byteArray), SendablePacket
-class RawPacket(byteArray: ByteArray) : TSPacket(null, byteArray)
-
-class InitPacket : TSPacket(0x0, ByteArray(0)), SendablePacket
-
-class LoginPacket(byteArray: ByteArray) : TSPacket(0x0108, byteArray), SendablePacket {
+class LoginPacket(byteArray: ByteArray) : SendablePacket(0x0108, byteArray) {
     val id by getIntLE(0)
     val password: String by getString(8, byteBuffer.writerIndex() - 8)
 
@@ -210,38 +228,52 @@ class LoginPacket(byteArray: ByteArray) : TSPacket(0x0108, byteArray), SendableP
 }
 
 //0x4203
-class OpenShop : TSPacket(0x4203), SendablePacket
+class OpenShop : SendablePacket(0x4203)
 
-class ClickNPCPacket(byteArray: ByteArray) : TSPacket(0x1401, byteArray), SendablePacket {
-    val npcId: Int
-        get() = byteBuffer.getShortLE(0).toInt()
+class ClickNPCPacket(byteArray: ByteArray) : SendablePacket(0x1401, byteArray) {
+    val npcId by getShortLE(0)
+
+    constructor(npdId: Int) : this(kotlin.ByteArray(2)) {
+        byteBuffer.setShortLE(0, npdId)
+    }
 
     override fun packetDesc(): String {
         return "$npcId"
     }
 }
 
-class ChooseMenuPacket(byteArray: ByteArray) : TSPacket(0x1409, byteArray), SendablePacket {
-    val menuId: Byte
-        get() = byteBuffer.getByte(0)
+class ChooseMenuPacket(byteArray: ByteArray) : SendablePacket(0x1409, byteArray) {
+    val menuId: Short = (byteBuffer.getUnsignedByte(0) - 29).toShort()
+
+    constructor(choiceId: Int) : this(kotlin.ByteArray(1)) {
+        byteBuffer.setByte(0, choiceId + 29)
+    }
 
     override fun packetDesc(): String {
         return "$menuId"
     }
 }
 
-class SendEndPacket : TSPacket(0x1406), SendablePacket
+class NpcDialogPacket(byteArray: ByteArray) : Packet(0x1401, byteArray) {
+    val type by getByte(4)
+    val dialogId by getShortLE(13)
 
-class ActionOverPacket : TSPacket(0x1408), SendablePacket
+    override fun packetDesc(): String {
+        return "DialogId: $dialogId $type"
+    }
+}
 
+class SendEndPacket : SendablePacket(0x1406)
 
-class UnHorsePacket : TSPacket(0x0F05), SendablePacket
+class ActionOverPacket : Packet(0x1408)
+
+class UnHorsePacket : SendablePacket(0x0F05)
 
 //0F 04 53 46 00 00
-class HorsePacket : TSPacket(0x0F04), SendablePacket
+class HorsePacket : SendablePacket(0x0F04)
 
 
-class WarpPacket(byteArray: ByteArray) : TSPacket(0x1408, byteArray), SendablePacket {
+class WarpPacket(byteArray: ByteArray) : SendablePacket(0x1408, byteArray) {
     val warpId by getShortLE(0)
 
     constructor(warpId: Int) : this(ByteArray(2)) {
@@ -255,7 +287,7 @@ class WarpPacket(byteArray: ByteArray) : TSPacket(0x1408, byteArray), SendablePa
 
 }
 
-class PlayerAppearPacket(byteArray: ByteArray) : TSPacket(0x0C, byteArray) {
+class PlayerAppearPacket(byteArray: ByteArray) : Packet(0x0C, byteArray) {
     val playerId by getIntLE(0)
     val mapId by getShortLE(4)
     val x by getShortLE(6)
@@ -267,10 +299,17 @@ class PlayerAppearPacket(byteArray: ByteArray) : TSPacket(0x0C, byteArray) {
 }
 
 //Receive 0x0601
-class PlayerWalkPacket(byteArray: ByteArray) : TSPacket(0x0601, byteArray) {
+class PlayerWalkPacket(byteArray: ByteArray) : Packet(0x0601, byteArray) {
     val partyId by getIntLE(0)
     val x by getShortLE(4)
     val y by getShortLE(6)
+
+    constructor(playerId: Long, x: Int, y: Int) : this(kotlin.ByteArray(9)) {
+        byteBuffer.setIntLE(0, playerId.toInt())
+        byteBuffer.setShortLE(4, x)
+        byteBuffer.setShortLE(6, y)
+        byteBuffer.setByte(8, 0x1)
+    }
 
     override fun packetDesc(): String {
         return "$partyId $x $y"
@@ -280,14 +319,14 @@ class PlayerWalkPacket(byteArray: ByteArray) : TSPacket(0x0601, byteArray) {
 
 //Send 0x0601
 enum class WalkDirection(val value: Byte) {
-    DOWN(0x01),
+    DOWN(0x04),
     UP(0x00),
     LEFT(0x02),
     RIGHT(0x06),
-    LTOP(0x01),
-    RTOP(0x07),
-    LBOT(0x03),
-    RBOT(0x05);
+    LTOP(0x03),
+    RTOP(0x05),
+    LBOT(0x01),
+    RBOT(0x07);
 
     companion object {
         fun fromByte(byte: Byte): WalkDirection {
@@ -302,18 +341,18 @@ enum class WalkDirection(val value: Byte) {
     }
 }
 
-class WalkPacket(byteArray: ByteArray) : TSPacket(0x0601, byteArray), SendablePacket {
+class WalkPacket(byteArray: ByteArray) : SendablePacket(0x0601, byteArray) {
     val direction: WalkDirection
         get() = WalkDirection.fromByte(byteBuffer.getByte(0))
     val x: Int by getShortLE(1)
     val y: Int by getShortLE(3)
 
     constructor(direction: WalkDirection, x: Int, y: Int) : this(ByteArray(7)) {
-        byteBuffer.writeByte(direction.value.toInt())
-        byteBuffer.writeShortLE(x)
-        byteBuffer.writeShortLE(y)
-        byteBuffer.writeByte(0x90)
-        byteBuffer.writeByte(0x57)
+        byteBuffer.setByte(0, direction.value.toInt())
+        byteBuffer.setShortLE(1, x)
+        byteBuffer.setShortLE(3, y)
+        byteBuffer.setByte(5, 0x9A)
+        byteBuffer.setByte(6, 0x85)
     }
 
     override fun packetDesc(): String {
@@ -323,7 +362,7 @@ class WalkPacket(byteArray: ByteArray) : TSPacket(0x0601, byteArray), SendablePa
 
 data class ItemInMap(val itemType: Byte, val indexInMap: Int, val itemId: Int, val x: Int, val y: Int)
 
-class ItemsInMapPacket(array: ByteArray) : TSPacket(0x1704, array) {
+class ItemsInMapPacket(array: ByteArray) : Packet(0x1704, array) {
     val items = mutableListOf<ItemInMap>()
 
     init {
@@ -344,7 +383,15 @@ class ItemsInMapPacket(array: ByteArray) : TSPacket(0x1704, array) {
     }
 }
 
-class PlayerShortInfoPacket(array: ByteArray) : TSPacket(0x04, array) {
+class NpcInMapPacket(array: ByteArray) : Packet(0x1604, array) {
+
+}
+
+class NpcAppear(array: ByteArray) : Packet(0x1602, array) {
+
+}
+
+class PlayerShortInfoPacket(array: ByteArray) : Packet(0x04, array) {
     val tsCharacterInfo: TSCharacterInfo
 
     init {
@@ -365,8 +412,9 @@ class PlayerShortInfoPacket(array: ByteArray) : TSPacket(0x04, array) {
     }
 }
 
-class PlayerOnlinePacket(array: ByteArray) : TSPacket(0x03, array) {
+class PlayerOnlinePacket(array: ByteArray) : Packet(0x03, array) {
     val playerId by getIntLE(0)
+
     init {
 
     }
@@ -377,7 +425,7 @@ class PlayerOnlinePacket(array: ByteArray) : TSPacket(0x03, array) {
 }
 
 
-class PlayerUpdatePacket(array: ByteArray) : TSPacket(0x1808, array) {
+class PlayerUpdatePacket(array: ByteArray) : Packet(0x1808, array) {
     val playerId by getIntLE(0)
 
 
@@ -388,10 +436,12 @@ class PlayerUpdatePacket(array: ByteArray) : TSPacket(0x1808, array) {
 
 data class BattlePos(val row: Byte, val col: Byte)
 
-class BattleStartedPacket(array: ByteArray): TSPacket(0x0B0A, array)
-class BattleStopPacket(array: ByteArray): TSPacket(0x0B0A, array)
+class BattleStartedPacket(array: ByteArray) : Packet(0x0B0A, array)
+class BattleStopPacket(array: ByteArray) : Packet(0x0B00, array) {
+    val battleUid: Long by getIntLE(0)
+}
 
-class SendAttackPacket(array: ByteArray) : TSPacket(0x3201, array), SendablePacket {
+class SendAttackPacket(array: ByteArray) : SendablePacket(0x3201, array) {
 
     constructor(sourcePos: BattlePos, targetPos: BattlePos, skillID: Int) : this(kotlin.ByteArray(8)) {
         byteBuffer.writeByte(sourcePos.row.toInt())
@@ -417,7 +467,25 @@ class SendAttackPacket(array: ByteArray) : TSPacket(0x3201, array), SendablePack
 //0x0B02
 class RequestObservePacket()
 
+class PickItemPacket(array: ByteArray) : SendablePacket(0x1702, array) {
+    val itemIndex by getShortLE(0)
 
-class WarpSuccessPacket() : TSPacket(0x1407)
+    constructor(itemIndex: Int) : this(kotlin.ByteArray(2)) {
+        byteBuffer.setShortLE(0, itemIndex)
+    }
+}
+
+class ItemReceivedPacket(array: ByteArray) : Packet(0x1706, array) {
+    val itemId by getShortLE(0)
+}
+
+class BagItemReceivedPacket(array: ByteArray) : Packet(0x1730, array) {
+
+}
+
+class MapDisplayedOverPacket : Packet(0x0504)
+class WarpSuccessPacket : Packet(0x1407)
+
+class WarpFinishedAckPacket : SendablePacket(0x0C01)
 
 

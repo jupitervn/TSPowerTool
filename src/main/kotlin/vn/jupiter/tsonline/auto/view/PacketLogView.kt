@@ -17,12 +17,20 @@ import kotlin.reflect.KClass
 /**
  * Created by jupiter on 6/13/17.
  */
+
+data class TSPacketCellData(val packet: Packet) {
+    val isReceivedPacket = packet !is SendablePacket
+    override fun toString(): String {
+        return "$packet raw:${packet.byteBuffer.array().toHex()}"
+    }
+}
+
 class PacketLogView : View() {
-    val appController: AppController by inject()
+    val mainController by inject<MainController>()
+
     var packetListView by singleAssign<ListView<TSPacketCellData>>()
     var filterListView by singleAssign<ListView<KClass<out Packet>>>()
     var commandTF by singleAssign<TextField>()
-    val logPackets = FXCollections.observableArrayList<TSPacketCellData>()
     var shouldShowSendPackets = SimpleBooleanProperty(true)
     var shouldShowReceivePackets = SimpleBooleanProperty(true)
 
@@ -30,7 +38,7 @@ class PacketLogView : View() {
         hbox {
             button("Clear log") {
                 action {
-                    logPackets.clear()
+                    mainController.logPackets.clear()
                 }
             }
 
@@ -46,7 +54,7 @@ class PacketLogView : View() {
                         byteArray[idx] = Integer.parseInt(hexString, 16).toByte()
                     }
 
-                    appController.sendPacket(RawSendablePacket(byteArray))
+                    mainController.tsFunction.send(RawSendablePacket(byteArray))
                 }
             }
         }
@@ -62,7 +70,7 @@ class PacketLogView : View() {
                         action {
                             val selectedItem = selectionModel.selectedItem
                             if (selectedItem != null && !selectedItem.isReceivedPacket) {
-                                appController.sendPacket(selectedItem.packet as SendablePacket)
+                                mainController.tsFunction.send(selectedItem.packet as SendablePacket)
                             }
                         }
                     }
@@ -119,18 +127,8 @@ class PacketLogView : View() {
         val knownPackets = receivedPacketRegistry.values + sentPacketRegistry.values + RawPacket::class + RawSendablePacket::class
         filterListView.items = FXCollections.observableList(knownPackets)
         filterListView.selectionModel.selectAll()
-        subscribe<PacketReceivedEvent> { packetReceivedEvent ->
-            if (packetReceivedEvent.packet.command != 0x1808) {
-                logPackets += TSPacketCellData(packetReceivedEvent.packet)
-            }
-//            packetListView.scrollTo(packetListView.items.size)
-        }
-        subscribe<PacketSentEvent> { packetSentEvent ->
-            logPackets += TSPacketCellData(packetSentEvent.packet)
-//            packetListView.scrollTo(packetListView.items.size)
-        }
 
-        val filteredList = SortedFilteredList<TSPacketCellData>(logPackets)
+        val filteredList = SortedFilteredList<TSPacketCellData>(mainController.logPackets)
         filteredList.bindTo(packetListView)
         filteredList.predicate = {
             if (it.isReceivedPacket) {

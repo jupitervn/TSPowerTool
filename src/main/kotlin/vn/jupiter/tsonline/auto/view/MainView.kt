@@ -1,44 +1,69 @@
 package vn.jupiter.tsonline.auto.view
 
-import javafx.beans.binding.Bindings
-import javafx.beans.property.SimpleStringProperty
+import javafx.geometry.Pos
+import javafx.scene.control.ToggleGroup
+import javafx.util.StringConverter
 import javafx.util.converter.NumberStringConverter
-import vn.jupiter.tsonline.auto.app.Styles
 import tornadofx.*
-import vn.jupiter.tsonline.auto.controller.AppController
+import vn.jupiter.tsonline.auto.app.Styles
+import vn.jupiter.tsonline.auto.controller.MainController
+import javax.swing.GroupLayout
 
-class MainView : View("TSPower Tool") {
-    val autoQuestView = find(AutoQuestTabView::class)
-    val warpView = find(WarpView::class)
-    val controller: AppController by inject()
-    override val root = vbox {
-        label("") {
-            addClass(Styles.heading)
-        }
-
-        tabpane {
-            tab("AutoQuest", autoQuestView.root)
-            tab("Warp", warpView.root)
-            tab("Environment")
-            prefWidth = 500.0
-            prefHeight = 750.0
-        }
-
-        hbox {
-            label("Mapname") {
-            }
-            label("MapId") {
-                textProperty().bindBidirectional(controller.tsChar.mapId, NumberStringConverter())
+class MainView : View("") {
+    val controller: MainController by inject(scope)
+    val autoQuestView = find(AutoQuestTabView::class, scope)
+    var packetLogView = find(PacketLogView::class)
+    val warpView = find(WarpView::class, scope)
+    override val root = borderpane {
+        top {
+            label("") {
+                addClass(Styles.heading)
             }
         }
+
+        center {
+            tabpane {
+                tab("AutoQuest", autoQuestView.root)
+                tab("Warp", warpView.root)
+                tab("Environment")
+            }
+        }
+
+        left {
+            add(packetLogView)
+            minWidth = 200.0
+        }
+
+        bottom {
+            hbox {
+                spacing = 10.0
+                label("Mapname") {
+                    bind(controller.mapNameProperty)
+                    alignment = Pos.CENTER_RIGHT
+                }
+                label("MapId") {
+                    textProperty().bindBidirectional(controller.tsFunction.tsChar.mapId, NumberStringConverter())
+                    alignment = Pos.CENTER_RIGHT
+                }
+
+                togglebutton(">", group = ToggleGroup()) {
+                    action {
+                        if (left.isVisible) {
+                            left.hide()
+                        } else {
+                            left.show()
+                        }
+                    }
+                }
+
+            }
+        }
+
+
     }
 
     init {
-        runAsync {
-            controller.loadStaticData()
-        } ui {
-            controller.onStart()
-        }
+        root.left.hide()
     }
 
     override fun onUndock() {

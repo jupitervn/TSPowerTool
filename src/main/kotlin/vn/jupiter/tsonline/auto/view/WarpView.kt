@@ -3,6 +3,7 @@ package vn.jupiter.tsonline.auto.view
 import javafx.scene.control.ComboBox
 import javafx.scene.control.TextArea
 import javafx.scene.control.TextField
+import javafx.scene.control.ToggleGroup
 import javafx.scene.layout.Priority
 import tornadofx.*
 import vn.jupiter.tsonline.auto.controller.WarpController
@@ -24,24 +25,31 @@ class WarpView : View() {
 //            }
 //        }
         hbox {
-            logArea = textarea {
+            logArea = textarea() {
                 hboxConstraints {
-                    hgrow = Priority.ALWAYS
+                    hgrow = Priority.SOMETIMES
                 }
+                textProperty().bind(warpController.warpingLogs)
             }
             vbox {
                 mapIds = combobox<MapData>(values = warpController.allMaps) {
                     promptText = "Input map"
+                    prefWidth = 200.0
                     makeAutocompletable { keyword ->
                         warpController.allMaps.filter {
                             "$it.id".contains(keyword) || it.name?.toLowerCase()!!.contains(keyword)
                         }
                     }
                 }
-                button("Go") {
+                togglebutton("Go", selectFirst = false, group = ToggleGroup()) {
                     vboxConstraints {
                         hgrow = Priority.ALWAYS
                     }
+                    selectedProperty().bindBidirectional(warpController.isWarpingProperty)
+                    val stateText = selectedProperty().stringBinding {
+                        if (it == true) "Warping" else "Go"
+                    }
+                    textProperty().bind(stateText)
                     action {
                         warpController.warpTo(mapIds.selectedItem)
                     }
