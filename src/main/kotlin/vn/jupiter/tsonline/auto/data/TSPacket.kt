@@ -206,6 +206,12 @@ sealed class Packet(val command: Int?, byteArray: ByteArray = ByteArray(0)) {
 sealed class SendablePacket(command: Int?, byteArray: ByteArray = ByteArray(0)) : Packet(command, byteArray)
 
 class RawSendablePacket(byteArray: ByteArray) : SendablePacket(null, byteArray)
+class ManualSendPacket(val packet: Packet) : SendablePacket(null, kotlin.ByteArray(0)) {
+    override fun packetDesc(): String {
+        return packet.packetDesc()
+    }
+}
+
 class RawPacket(byteArray: ByteArray) : Packet(null, byteArray)
 
 class InitPacket : SendablePacket(0x0, ByteArray(0))
@@ -243,14 +249,15 @@ class ClickNPCPacket(byteArray: ByteArray) : SendablePacket(0x1401, byteArray) {
 }
 
 class ChooseMenuPacket(byteArray: ByteArray) : SendablePacket(0x1409, byteArray) {
-    val menuId: Short = (byteBuffer.getUnsignedByte(0) - 29).toShort()
+    val menuId: Short
+        get() = (byteBuffer.getUnsignedByte(0) - 29).toShort()
 
     constructor(choiceId: Int) : this(kotlin.ByteArray(1)) {
         byteBuffer.setByte(0, choiceId + 29)
     }
 
     override fun packetDesc(): String {
-        return "$menuId"
+        return "Choose $menuId"
     }
 }
 
@@ -286,6 +293,21 @@ class WarpPacket(byteArray: ByteArray) : SendablePacket(0x1408, byteArray) {
     }
 
 }
+
+class SpecialWarpPacket(byteArray: ByteArray) : SendablePacket(0x1404, byteArray) {
+    val warpId by getShortLE(0)
+
+    constructor(warpId: Int) : this(ByteArray(2)) {
+        byteBuffer.resetWriterIndex()
+        byteBuffer.writeShortLE(warpId)
+    }
+
+    override fun packetDesc(): String {
+        return "Warp via $warpId"
+    }
+
+}
+
 
 class PlayerAppearPacket(byteArray: ByteArray) : Packet(0x0C, byteArray) {
     val playerId by getIntLE(0)
@@ -383,6 +405,12 @@ class ItemsInMapPacket(array: ByteArray) : Packet(0x1704, array) {
     }
 }
 
+class ItemAppearPacket(array: ByteArray) : Packet(0x1703, array) {
+    val itemId by getShortLE(0)
+    val x by getShortLE(2)
+    val y by getShortLE(4)
+}
+
 class NpcInMapPacket(array: ByteArray) : Packet(0x1604, array) {
 
 }
@@ -433,12 +461,30 @@ class PlayerUpdatePacket(array: ByteArray) : Packet(0x1808, array) {
         return "$playerId"
     }
 }
+data class InventoryItem(val idx: Int, val itemId: Int, val count: Int)
+
+class InventoryListPacket(array: ByteArray) : Packet(0x1705, array) {
+    val items = arrayOfNulls<InventoryItem>(50)
+    init {
+        byteBuffer.resetReaderIndex()
+        while (byteBuffer.isReadable) {
+            val idx = byteBuffer.readUnsignedByte()
+            val itemId = byteBuffer.readUnsignedShortLE()
+            val count = byteBuffer.readUnsignedByte()
+            byteBuffer.skipBytes(8)
+            items[idx - 1] = InventoryItem(idx - 1, itemId, count.toInt())
+        }
+    }
+}
 
 data class BattlePos(val row: Byte, val col: Byte)
 
 class BattleStartedPacket(array: ByteArray) : Packet(0x0B0A, array)
 class BattleStopPacket(array: ByteArray) : Packet(0x0B00, array) {
     val battleUid: Long by getIntLE(0)
+    override fun packetDesc(): String {
+        return "Uid: $battleUid"
+    }
 }
 
 class SendAttackPacket(array: ByteArray) : SendablePacket(0x3201, array) {
@@ -487,5 +533,10 @@ class MapDisplayedOverPacket : Packet(0x0504)
 class WarpSuccessPacket : Packet(0x1407)
 
 class WarpFinishedAckPacket : SendablePacket(0x0C01)
+class SendEndRequiredPacket : Packet(0x1410)
+class StartBusyPacket : Packet(0x0602)
+class SendEndRequired1 : Packet(0x140B)
+class SendEndRequired2 : Packet(0x140D)
+class AfterBattlePacket3 : Packet(0x140A)
 
 

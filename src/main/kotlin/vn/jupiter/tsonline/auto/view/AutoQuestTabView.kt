@@ -1,25 +1,17 @@
 package vn.jupiter.tsonline.auto.view
 
-import javafx.beans.binding.Bindings
-import javafx.beans.property.SimpleBooleanProperty
-import javafx.collections.FXCollections
-import javafx.scene.control.ListView
-import javafx.scene.control.SelectionMode
 import javafx.scene.control.TextField
 import javafx.scene.control.ToggleGroup
-import javafx.scene.layout.Priority
 import tornadofx.*
-import vn.jupiter.tsonline.auto.controller.AppController
 import vn.jupiter.tsonline.auto.controller.AutoQuestController
-import vn.jupiter.tsonline.auto.controller.PacketReceivedEvent
-import vn.jupiter.tsonline.auto.controller.PacketSentEvent
-import vn.jupiter.tsonline.auto.data.*
+import java.io.File
 
 /**
  * Created by jupiter on 6/13/17.
  */
 class AutoQuestTabView : View("") {
     val controller by inject<AutoQuestController>()
+    var questNameTF by singleAssign<TextField>()
     override val root = vbox {
         hbox {
             spacing = 10.0
@@ -32,12 +24,8 @@ class AutoQuestTabView : View("") {
                 }
             }
 
-            button("Load") {
-
-            }
-
             val defaultGroup = ToggleGroup()
-            togglebutton(group = defaultGroup, selectFirst = false) {
+            togglebutton(text = "Auto", group = defaultGroup, selectFirst = false) {
                 action {
                     if (isSelected) {
                         controller.startDoAutoQuest()
@@ -48,9 +36,26 @@ class AutoQuestTabView : View("") {
 
             }
 
-            togglebutton(group = defaultGroup) {
-                text("Record")
+            togglebutton(text = "Record",group = defaultGroup, selectFirst = false) {
                 selectedProperty().bindBidirectional(controller.isQuestRecording)
+                controller.isQuestRecording.addListener { _, old, new ->
+                    if (old && !new) {
+                        val questDirectory = chooseDirectory("Save quest", owner = currentWindow)
+                        controller.saveRecoredQuest(questDirectory)
+                    }
+                }
+            }
+
+            button("Save") {
+                action {
+                    val dodoFolder = chooseDirectory ("Open dodo script folder")
+                    dodoFolder?.let {
+                        controller.saveRecoredQuest(dodoFolder)
+                    }
+                }
+            }
+
+            questNameTF = textfield(controller.questNameProperty) {
 
             }
         }
@@ -71,11 +76,25 @@ class AutoQuestTabView : View("") {
             }
 
             contextmenu {
-                menu("Run From This Step") {
-
+                item("Run From This Step") {
+                    action {
+                        controller.startDoAutoQuest(selectionModel.selectedIndex)
+                    }
                 }
 
-                menu("ReRun") {
+                item("Re-run") {
+                    action {
+                        controller.reRunStep(selectionModel.selectedIndex)
+                    }
+                }
+
+                item("Delete") {
+                    action {
+                        controller.deleteQuestAtIndex(selectionModel.selectedIndex)
+                    }
+                }
+
+                item("Add") {
 
                 }
             }
@@ -83,6 +102,7 @@ class AutoQuestTabView : View("") {
     }
 
     init {
+        controller.loadDodoQuest(File("/Users/jupiter/Parallels/Game Tools/1_AutoQuest/Cu thu/"))
     }
 
     override fun onDock() {

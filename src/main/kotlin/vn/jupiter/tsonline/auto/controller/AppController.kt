@@ -12,12 +12,13 @@ import io.reactivex.netty.protocol.tcp.client.TcpClient
 import io.reactivex.netty.protocol.tcp.server.TcpServer
 import javafx.beans.property.*
 import javafx.collections.FXCollections
+import javafx.collections.ObservableList
 import javafx.collections.ObservableMap
 import org.jgrapht.alg.shortestpath.DijkstraShortestPath
 import org.jgrapht.graph.DefaultDirectedWeightedGraph
 import org.jgrapht.graph.DefaultWeightedEdge
 import rx.Observable
-import rx.functions.Func1
+import rx.Subscription
 import rx.schedulers.Schedulers
 import rx.subjects.PublishSubject
 import tornadofx.*
@@ -54,7 +55,7 @@ data class TSChar(val id: LongProperty = SimpleLongProperty(0),
                   val mapId: IntegerProperty = SimpleIntegerProperty(0),
                   val x: IntegerProperty = SimpleIntegerProperty(0),
                   val y: IntegerProperty = SimpleIntegerProperty(0),
-                  val inventory: MapProperty<Int, Int> = SimpleMapProperty<Int, Int>())
+                  val inventory: ObservableList<InventoryItem> = FXCollections.observableArrayList<InventoryItem>())
 
 
 //data class TSWorld()
@@ -72,7 +73,13 @@ val receivedPacketRegistry = mapOf(
         0x1401 to NpcDialogPacket::class,
         0x1604 to NpcInMapPacket::class,
         0x1706 to ItemReceivedPacket::class,
-        0x0504 to MapDisplayedOverPacket::class
+        0x1703 to ItemAppearPacket::class,
+        0x1705 to InventoryListPacket::class,
+        0x0504 to MapDisplayedOverPacket::class,
+        0x1410 to SendEndRequiredPacket::class,
+        0x0602 to StartBusyPacket::class,
+        0x140D to SendEndRequired2::class,
+        0x140B to SendEndRequired1::class
 )
 
 val sentPacketRegistry = mapOf(
@@ -81,6 +88,7 @@ val sentPacketRegistry = mapOf(
         0x4203 to OpenShop::class,
         0x0601 to WalkPacket::class,
         0x1408 to WarpPacket::class,
+        //        0x1404 to SpecialWarpPacket::class,
         0x1401 to ClickNPCPacket::class,
         0x1409 to ChooseMenuPacket::class,
         0x1406 to SendEndPacket::class,
@@ -98,24 +106,23 @@ interface TSFunction {
     fun handleProxyConnection(serverConn: Connection<ByteBuf, ByteBuf>, clientConnReq: ConnectionRequest<ByteBuf, ByteBuf>): Observable<Void>
     fun warpTo(mapId: Int)
     fun stopWarping()
-    fun sendConfirmation() {
-        send(SendEndPacket(), 500)
+    fun sendConfirmation(delay: Long = 0) {
+        send(SendEndPacket(), delay)
     }
 
     fun walkTo(x: Int?, y: Int?)
     fun chooseOption(choiceId: Int) {
         send(ChooseMenuPacket(choiceId))
+        send(SendEndPacket())
     }
 
     fun talkTo(npcId: Int) {
         send(ClickNPCPacket(npcId))
     }
 
-    fun warpVia(warpId: Int) {
-        send(WarpPacket(warpId))
-    }
+    fun warpVia(warpId: Int, isSpecialWarp: Boolean = false)
 
-    fun pickItemWithId(itemId: Int)
+    fun waitToPickItem(itemId: Int)
 }
 
 data class PacketWithDelay(val packet: SendablePacket, val delay: Long = 0)
@@ -133,11 +140,14 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
 
     private val walkDirectionsQueue = ArrayDeque<MapDirection>()
     private var targetWarpMapId: Int? = null
-    private var isDialogShowing: Boolean = false
+    private var isBusyTalkingOrBattling: Boolean = false
+    private var isDialogCurrentlyShowing: Boolean = false
+    private var isWarpingSameMap: Boolean = false
     private var targetItemPicked: Int? = null
     private var itemsInMap = mutableListOf<ItemInMap>()
+    private var delaySendEndSubscription: Subscription? = null
 
-    override val packetsPublisher: Observable<Packet> = packetsLogPublisher.publish().refCount()
+    override val packetsPublisher: Observable<Packet> = packetsLogPublisher.publish().refCount().onBackpressureBuffer()
     override val gameEventPublisher: Observable<GameEvent> = gameEvents.publish().refCount()
     override val tsChar = TSChar()
 
@@ -171,7 +181,7 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                                                 Observable.just(it.packet).delay(it.delay, TimeUnit.MILLISECONDS)
                                             }
                                             .map { it ->
-                                                handlePacketSent(it)
+                                                handlePacketSent(it, true)
                                                 it.toBytePacket()
                                             }
                                     ))
@@ -206,8 +216,12 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
         return handlePacketSent(packet as SendablePacket)
     }
 
-    private fun handlePacketSent(packet: SendablePacket): Boolean {
-        packetsLogPublisher.onNext(packet)
+    private fun handlePacketSent(packet: SendablePacket, isManualSend: Boolean = false): Boolean {
+        if (isManualSend) {
+            packetsLogPublisher.onNext(ManualSendPacket(packet))
+        } else {
+            packetsLogPublisher.onNext(packet)
+        }
         when (packet) {
             is LoginPacket -> {
                 resetData(packet)
@@ -230,6 +244,22 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                 tsChar.y.set(packet.y)
                 gameEvents.onNext(WalkFinished(tsChar.x.get(), tsChar.y.get()))
             }
+            is ChooseMenuPacket -> {
+                gameEvents.onNext(MenuChosen(packet.menuId.toInt()))
+            }
+            is WarpPacket -> {
+                if (!isWarping) {
+                    gameEvents.onNext(MapDirection(tsChar.mapId.get(), tsChar.mapId.get(), packet.warpId))
+                }
+            }
+            is ClickNPCPacket -> {
+                gameEvents.onNext(NpcClicked(packet.npcId))
+            }
+            is SendEndPacket -> {
+                if (!isManualSend) {
+                    delaySendEndSubscription?.unsubscribe()
+                }
+            }
         }
         return true
     }
@@ -248,7 +278,6 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                 }
             }
             is BattleStartedPacket -> {
-                isDialogShowing = false
                 userCancelAction = false
                 charStatusPublisher.onNext(CharacterStatus.BATTLING)
                 gameEvents.onNext(BattleStarted())
@@ -261,13 +290,17 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                             stopWarping()
                         }
                     }
-                    charStatusPublisher.onNext(CharacterStatus.IDLE)
                     gameEvents.onNext(BattleEnded())
                 }
                 userCancelAction = false
             }
+            is StartBusyPacket -> {
+                if (!isWarping) {
+                    isBusyTalkingOrBattling = true
+                }
+            }
             is NpcDialogPacket -> {
-                isDialogShowing = true
+                isDialogCurrentlyShowing = true
                 if (isWarping) {
                     send(SendEndPacket())
                 }
@@ -278,22 +311,37 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                 }
             }
             is ActionOverPacket -> {
+                println("Action Over packet ${isWarping} ${isWarpingSameMap} ${warpState} ${isBusyTalkingOrBattling} ${isDialogCurrentlyShowing}")
                 if (isWarping) {
                     return false
                 }
-                if (isDialogShowing) {
-                    gameEvents.onNext(TalkFinished())
-                    isDialogShowing = false
+                if (isWarpingSameMap) {
+                    isWarpingSameMap = false
+                    gameEvents.onNext(WarpSameMapFinished())
+                } else if (isBusyTalkingOrBattling) {
+                    if (isDialogCurrentlyShowing) {
+                        gameEvents.onNext(TalkFinished())
+                    }
+                } else if (warpState == 1) {
+                    warpState = 0
+                    gameEvents.onNext(WarpingEnded())
                 }
+                isDialogCurrentlyShowing = false
+                isBusyTalkingOrBattling = false
+                charStatusPublisher.onNext(CharacterStatus.IDLE)
             }
             is PlayerAppearPacket -> {
                 when {
                     (packet.playerId == tsChar.id.get()) -> {
+                        val oldMapId = tsChar.mapId.get()
                         tsChar.mapId.set(packet.mapId)
                         tsChar.x.set(packet.x)
                         tsChar.y.set(packet.y)
-                        return !handleWarping()
-
+                        if (!handleWarping()) {
+                            gameEvents.onNext(MapChanged(oldMapId, packet.mapId))
+                        } else {
+                            return false
+                        }
                     }
                 }
             }
@@ -310,12 +358,25 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                 itemsInMap.clear()
                 itemsInMap.addAll(packet.items)
                 targetItemPicked?.let {
-                    pickItemWithId(it)
+                    waitToPickItem(it)
                 }
-                gameEvents.onNext(ItemAppeared(packet.items))
+                gameEvents.onNext(ItemAppeared(itemsInMap))
             }
             is ItemReceivedPacket -> {
                 gameEvents.onNext(ItemReceived(packet.itemId))
+            }
+            is ItemAppearPacket -> {
+                itemsInMap.add(ItemInMap(0x1, itemsInMap.size, packet.itemId, packet.x, packet.y))
+                targetItemPicked?.let {
+                    waitToPickItem(it)
+                }
+                gameEvents.onNext(ItemAppeared(itemsInMap))
+            }
+            is InventoryListPacket -> {
+                tsChar.inventory.clear()
+                packet.items
+                        .filterNotNull()
+                        .forEach { tsChar.inventory += it }
             }
             is WarpSuccessPacket -> {
                 if (isWarping) {
@@ -323,13 +384,24 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                 }
             }
             is MapDisplayedOverPacket -> {
-                if (warpState == 1) {
-                    warpState = 0
-                    gameEvents.onNext(WarpingEnded())
-                }
+//                if (isWarping) {
+//                    return false
+//                }
+            }
+            is SendEndRequired1 -> {
+
+            }
+            is SendEndRequired2 -> {
+
+            }
+            is SendEndRequiredPacket -> {
             }
         }
         return true
+    }
+
+    private fun enqueueSendEnd() {
+
     }
 
     private fun resumeWarping() {
@@ -382,11 +454,37 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
         tsChar.mapId.set(0)
         tsChar.x.set(0)
         tsChar.y.set(0)
+        tsChar.inventory.clear()
         targetWarpMapId = null
         targetItemPicked = null
+        warpState = 0
         itemsInMap.clear()
         charStatusPublisher.onNext(CharacterStatus.IDLE)
         walkDirectionsQueue.clear()
+    }
+
+    override fun warpVia(warpId: Int, isSpecialWarp: Boolean) {
+        val targetEdges = appController.mapGraph.outgoingEdgesOf(tsChar.mapId.get())
+        var isWarpActionSameMap = true
+        for (edge in targetEdges) {
+            if (appController.mapGraph.getEdgeWeight(edge).toInt() == warpId) {
+                val targetMapId = appController.mapGraph.getEdgeTarget(edge)
+                if (targetMapId != tsChar.mapId.get()) {
+                    //Warp to another map
+                    warpTo(targetMapId)
+                }
+                break
+            }
+        }
+        if (isWarpActionSameMap) {
+            isWarpingSameMap = isWarpActionSameMap
+            if (isSpecialWarp) {
+                send(SpecialWarpPacket(warpId))
+            } else {
+                send(WarpPacket(warpId))
+            }
+//            send(SendEndPacket())
+        }
     }
 
     override fun warpTo(mapId: Int) {
@@ -420,33 +518,37 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
         if (x != null && y != null) {
             var currentX = tsChar.x.get()
             var currentY = tsChar.y.get()
-            var count = 1L
-            while (currentX != x) {
-                if (currentX <= x) {
-                    currentX += Math.min(MAX_DISTANCE, x - currentX)
-                    send(WalkPacket(WalkDirection.RIGHT, currentX, currentY), WALK_DELAY * count)
-                } else {
-                    currentX -= Math.min(MAX_DISTANCE, currentX - x)
-                    send(WalkPacket(WalkDirection.LEFT, currentX, currentY), WALK_DELAY* count)
+            if (x == currentX && y == currentY) {
+                gameEvents.onNext(WalkFinished(tsChar.x.get(), tsChar.y.get()))
+            } else {
+                var count = 1L
+                while (currentX != x) {
+                    if (currentX <= x) {
+                        currentX += Math.min(MAX_DISTANCE, x - currentX)
+                        send(WalkPacket(WalkDirection.RIGHT, currentX, currentY), WALK_DELAY * count)
+                    } else {
+                        currentX -= Math.min(MAX_DISTANCE, currentX - x)
+                        send(WalkPacket(WalkDirection.LEFT, currentX, currentY), WALK_DELAY * count)
+                    }
+                    count++
                 }
-                count++
-            }
-            while (currentY != y) {
-                if (currentY <= y) {
-                    currentY += Math.min(MAX_DISTANCE, y - currentY)
-                    send(WalkPacket(WalkDirection.UP, currentX, currentY), WALK_DELAY * count)
-                } else {
-                    currentY -= Math.min(MAX_DISTANCE, currentY - y)
-                    send(WalkPacket(WalkDirection.DOWN, currentX, currentY), WALK_DELAY * count)
+                while (currentY != y) {
+                    if (currentY <= y) {
+                        currentY += Math.min(MAX_DISTANCE, y - currentY)
+                        send(WalkPacket(WalkDirection.UP, currentX, currentY), WALK_DELAY * count)
+                    } else {
+                        currentY -= Math.min(MAX_DISTANCE, currentY - y)
+                        send(WalkPacket(WalkDirection.DOWN, currentX, currentY), WALK_DELAY * count)
+                    }
+                    count++
                 }
-                count++
             }
         } else {
             gameEvents.onNext(WalkFinished(tsChar.x.get(), tsChar.y.get()))
         }
     }
 
-    override fun pickItemWithId(itemId: Int) {
+    override fun waitToPickItem(itemId: Int) {
         targetItemPicked = itemId
         for (item in itemsInMap) {
             if (item.itemId == itemId) {

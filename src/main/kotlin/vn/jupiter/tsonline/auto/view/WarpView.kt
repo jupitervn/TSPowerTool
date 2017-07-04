@@ -25,7 +25,8 @@ class WarpView : View() {
 //            }
 //        }
         hbox {
-            logArea = textarea() {
+            logArea = textarea {
+                isEditable = false
                 hboxConstraints {
                     hgrow = Priority.SOMETIMES
                 }

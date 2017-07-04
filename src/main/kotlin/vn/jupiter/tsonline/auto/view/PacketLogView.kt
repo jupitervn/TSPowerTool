@@ -2,14 +2,11 @@ package vn.jupiter.tsonline.auto.view
 
 import javafx.beans.property.SimpleBooleanProperty
 import javafx.collections.FXCollections
-import javafx.scene.Parent
 import javafx.scene.control.ListView
 import javafx.scene.control.SelectionMode
 import javafx.scene.control.TextField
 import javafx.scene.layout.Priority
-import sun.jvm.hotspot.oops.Klass
 import tornadofx.*
-import vn.jupiter.tsonline.auto.app.Styles
 import vn.jupiter.tsonline.auto.controller.*
 import vn.jupiter.tsonline.auto.data.*
 import kotlin.reflect.KClass
@@ -124,7 +121,7 @@ class PacketLogView : View() {
     }
 
     init {
-        val knownPackets = receivedPacketRegistry.values + sentPacketRegistry.values + RawPacket::class + RawSendablePacket::class
+        val knownPackets = receivedPacketRegistry.values + sentPacketRegistry.values + RawPacket::class + RawSendablePacket::class + ManualSendPacket::class
         filterListView.items = FXCollections.observableList(knownPackets)
         filterListView.selectionModel.selectAll()
 

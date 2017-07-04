@@ -10,11 +10,16 @@ sealed class QuestStep {
     abstract val x: Int?
     abstract val y: Int?
     abstract val mapId: Int
+    abstract val choiceId: Int?
 }
 
-data class TalkToNpc(override val mapId: Int, override val x: Int? = null, override val y: Int? = null, val npcId: Int, val choiceId: Int? = null, override val customName: String = "Talk with $npcId")
+data class TalkToNpc(override val mapId: Int, override val x: Int? = null, override val y: Int? = null, val npcId: Int, override val choiceId: Int? = null, override val customName: String = "Talk with $npcId")
     : QuestStep()
-data class WarpToId(override val mapId: Int, override val x: Int? = null, override val y: Int? = null, val warpId: Int, override val customName: String = "Warp through $warpId")
+data class WarpToId(override val mapId: Int, override val x: Int? = null, override val y: Int? = null, val warpId: Int, override val choiceId: Int? = null, override val customName: String = "Warp through $warpId")
+    : QuestStep()
+data class SpecialWarpToId(override val mapId: Int, override val x: Int? = null, override val y: Int? = null, val warpId: Int, override val choiceId: Int? = null, override val customName: String = "Special Warp through $warpId")
     : QuestStep()
 data class PickItemWithId(override val mapId: Int, override val x: Int? = null, override val y: Int? = null, val itemId: Int, override val customName: String = "Pick item $itemId")
-    : QuestStep()
+    : QuestStep() {
+    override val choiceId: Int? = null
+}

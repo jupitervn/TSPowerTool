@@ -29,4 +29,8 @@ data class ItemReceived(val itemId: Int): GameEvent()
 class MenuAppear : GameEvent()
 class TalkFinished : GameEvent()
 data class WalkFinished(val x: Int, val y: Int) : GameEvent()
+data class ItemPicked(val itemId: Int): GameEvent()
+data class MapChanged(val sourceMapId: Int, val targetMapId: Int): GameEvent()
+data class SendEndRequired(val type: Int) : GameEvent()
+class WarpSameMapFinished : GameEvent()
 
