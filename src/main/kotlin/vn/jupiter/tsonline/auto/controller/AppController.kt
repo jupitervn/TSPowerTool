@@ -25,8 +25,11 @@ import tornadofx.*
 import vn.jupiter.tsonline.auto.data.*
 import vn.jupiter.tsonline.auto.utils.JavaFxScheduler
 import java.io.File
+import java.sql.Time
 import java.util.*
+import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.TimeUnit
+import kotlin.concurrent.timer
 import kotlin.reflect.KClass
 import kotlin.reflect.full.primaryConstructor
 
@@ -88,7 +91,7 @@ val sentPacketRegistry = mapOf(
         0x4203 to OpenShop::class,
         0x0601 to WalkPacket::class,
         0x1408 to WarpPacket::class,
-        //        0x1404 to SpecialWarpPacket::class,
+        0x1404 to SpecialWarpPacket::class,
         0x1401 to ClickNPCPacket::class,
         0x1409 to ChooseMenuPacket::class,
         0x1406 to SendEndPacket::class,
@@ -106,14 +109,13 @@ interface TSFunction {
     fun handleProxyConnection(serverConn: Connection<ByteBuf, ByteBuf>, clientConnReq: ConnectionRequest<ByteBuf, ByteBuf>): Observable<Void>
     fun warpTo(mapId: Int)
     fun stopWarping()
-    fun sendConfirmation(delay: Long = 0) {
-        send(SendEndPacket(), delay)
-    }
+    fun sendConfirmation(delay: Long = 0)
+    fun enqueueSendEnd(type: Int)
 
     fun walkTo(x: Int?, y: Int?)
     fun chooseOption(choiceId: Int) {
         send(ChooseMenuPacket(choiceId))
-        send(SendEndPacket())
+        sendConfirmation()
     }
 
     fun talkTo(npcId: Int) {
@@ -145,7 +147,8 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
     private var isWarpingSameMap: Boolean = false
     private var targetItemPicked: Int? = null
     private var itemsInMap = mutableListOf<ItemInMap>()
-    private var delaySendEndSubscription: Subscription? = null
+    private val sendEndQueue = LinkedBlockingDeque<TimerTask>()
+    private val sendEndTimer = Timer("SendEndTimer", true)
 
     override val packetsPublisher: Observable<Packet> = packetsLogPublisher.publish().refCount().onBackpressureBuffer()
     override val gameEventPublisher: Observable<GameEvent> = gameEvents.publish().refCount()
@@ -236,7 +239,7 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
             }
             is WarpFinishedAckPacket -> {
                 if (warpState == 1) {
-                    send(SendEndPacket())
+                    sendConfirmation()
                 }
             }
             is WalkPacket -> {
@@ -257,7 +260,11 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
             }
             is SendEndPacket -> {
                 if (!isManualSend) {
-                    delaySendEndSubscription?.unsubscribe()
+                    var poll = sendEndQueue.poll()
+                    while (poll != null && !poll.cancel()) {
+                        println("${System.currentTimeMillis()} Remove send end of $poll remain ${sendEndQueue.size}")
+                        poll = sendEndQueue.poll()
+                    }
                 }
             }
         }
@@ -285,7 +292,7 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
             is BattleStopPacket -> {
                 if (tsChar.id.get() == packet.battleUid) {
                     if (isWarping) {
-                        send(SendEndPacket())
+                        sendConfirmation()
                         if (userCancelAction) {
                             stopWarping()
                         }
@@ -302,7 +309,8 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
             is NpcDialogPacket -> {
                 isDialogCurrentlyShowing = true
                 if (isWarping) {
-                    send(SendEndPacket())
+                    sendConfirmation()
+                    return false
                 }
                 if (packet.type.toInt() == 6) {
                     gameEvents.onNext(MenuAppear())
@@ -389,19 +397,28 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
 //                }
             }
             is SendEndRequired1 -> {
-
+                enqueueSendEnd(1)
             }
             is SendEndRequired2 -> {
+                enqueueSendEnd(2)
 
             }
             is SendEndRequiredPacket -> {
+                enqueueSendEnd(0)
             }
         }
         return true
     }
 
-    private fun enqueueSendEnd() {
+    override fun sendConfirmation(delay: Long) {
+        send(SendEndPacket(), delay)
+    }
 
+    override fun enqueueSendEnd(type: Int) {
+        val value: TimerTask = SendEndTimerTask(type, this)
+        sendEndQueue.add(value)
+        println("${System.currentTimeMillis()} Queue send end for $type ${sendEndQueue.size}")
+        sendEndTimer.schedule(value, 500)
     }
 
     private fun resumeWarping() {
@@ -446,7 +463,7 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
         send(RawSendablePacket(byteArrayOf(0x41, 0x01, 0x3C, 0x3C, 0x3C, 0x3C, 0x0, 0x0, 0x0, 0x0)))
         send(RawSendablePacket(byteArrayOf(0x17, 0x30)))
         send(RawSendablePacket(byteArrayOf(0x0C, 0x01)))
-        send(SendEndPacket())
+        sendConfirmation()
     }
 
     private fun resetData(packet: LoginPacket) {
@@ -461,6 +478,7 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
         itemsInMap.clear()
         charStatusPublisher.onNext(CharacterStatus.IDLE)
         walkDirectionsQueue.clear()
+        sendEndQueue.clear()
     }
 
     override fun warpVia(warpId: Int, isSpecialWarp: Boolean) {
@@ -472,18 +490,18 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
                 if (targetMapId != tsChar.mapId.get()) {
                     //Warp to another map
                     warpTo(targetMapId)
+                    isWarpActionSameMap = false
                 }
                 break
             }
         }
+        isWarpingSameMap = isWarpActionSameMap
         if (isWarpActionSameMap) {
-            isWarpingSameMap = isWarpActionSameMap
             if (isSpecialWarp) {
                 send(SpecialWarpPacket(warpId))
             } else {
                 send(WarpPacket(warpId))
             }
-//            send(SendEndPacket())
         }
     }
 
@@ -561,6 +579,17 @@ class TSConnectionHandler(val appController: AppController) : TSFunction {
 
     override fun stopWarping() {
         walkDirectionsQueue.clear()
+    }
+
+    class SendEndTimerTask(val type: Int, val tsFunction: TSFunction) : TimerTask() {
+        override fun run() {
+            tsFunction.sendConfirmation()
+            println("${System.currentTimeMillis()} Send End for $type")
+        }
+
+        override fun toString(): String {
+            return "Task of $type"
+        }
     }
 }
 

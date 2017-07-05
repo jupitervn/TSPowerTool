@@ -13,7 +13,7 @@ data class MapData(val id: Int, val name: String?) {
 
 sealed class GameEvent
 
-class PathCalculated(val path: GraphPath<*,*>?): GameEvent()
+data class PathCalculated(val path: GraphPath<*,*>?): GameEvent()
 class WarpingStarted : GameEvent()
 class WarpingEnded : GameEvent()
 data class MapDirection(val fromId: Int, val targetId: Int, val warpId: Int) : GameEvent()
@@ -31,6 +31,5 @@ class TalkFinished : GameEvent()
 data class WalkFinished(val x: Int, val y: Int) : GameEvent()
 data class ItemPicked(val itemId: Int): GameEvent()
 data class MapChanged(val sourceMapId: Int, val targetMapId: Int): GameEvent()
-data class SendEndRequired(val type: Int) : GameEvent()
 class WarpSameMapFinished : GameEvent()
 

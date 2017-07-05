@@ -17,7 +17,8 @@ import java.io.File
 class AutoQuestController : Controller() {
     val mainController by inject<MainController>()
     val tsFunction: TSFunction = (scope as ConnectionScope).tsFunction
-    val questSteps = FXCollections.observableArrayList<QuestStep>()
+    val listOfQuests = FXCollections.observableArrayList<Quest>()
+    val currentRunningQuestSteps = FXCollections.observableArrayList<QuestStep>()
     val currentStep = SimpleIntegerProperty(-1)
     val isQuestRecording = SimpleBooleanProperty()
     val questNameProperty = SimpleStringProperty()
@@ -26,8 +27,8 @@ class AutoQuestController : Controller() {
 
     init {
         currentStep.onChange { newValue ->
-            if (newValue < questSteps.size && newValue >= 0) {
-                val questStep = questSteps[currentStep.get()]
+            if (newValue < currentRunningQuestSteps.size && newValue >= 0) {
+                val questStep = currentRunningQuestSteps[currentStep.get()]
                 tsFunction.warpTo(questStep.mapId)
             } else {
                 currentStep.set(-1)
@@ -35,7 +36,7 @@ class AutoQuestController : Controller() {
         }
         isQuestRecording.onChange {
             if (it) {
-                questSteps.clear()
+                currentRunningQuestSteps.clear()
                 currentStep.set(-1)
                 recordQuestSubscription = tsFunction.gameEventPublisher
                         .observeOn(JavaFxScheduler.getInstance())
@@ -46,25 +47,25 @@ class AutoQuestController : Controller() {
                             println("Record quest ${gameEvent}")
                             when (gameEvent) {
                                 is NpcClicked -> {
-                                    questSteps += TalkToNpc(currentMapId, x, y, gameEvent.npcId)
+                                    currentRunningQuestSteps += TalkToNpc(currentMapId, x, y, gameEvent.npcId)
                                 }
                                 is MenuChosen -> {
-                                    questSteps.lastOrNull()?.let {
+                                    currentRunningQuestSteps.lastOrNull()?.let {
                                         if (it is TalkToNpc) {
-                                            questSteps[questSteps.size - 1] = it.copy(choiceId = gameEvent.choiceId)
+                                            currentRunningQuestSteps[currentRunningQuestSteps.size - 1] = it.copy(choiceId = gameEvent.choiceId)
                                         } else if (it is WarpToId) {
-                                            questSteps[questSteps.size - 1] = it.copy(choiceId = gameEvent.choiceId)
+                                            currentRunningQuestSteps[currentRunningQuestSteps.size - 1] = it.copy(choiceId = gameEvent.choiceId)
                                         }
                                     }
                                 }
                                 is MapDirection -> {
-                                    questSteps += WarpToId(currentMapId, x, y, gameEvent.warpId)
+                                    currentRunningQuestSteps += WarpToId(currentMapId, x, y, gameEvent.warpId)
                                 }
                                 is ItemReceived -> {
-                                    questSteps += PickItemWithId(currentMapId, x, y, gameEvent.itemId)
+                                    currentRunningQuestSteps += PickItemWithId(currentMapId, x, y, gameEvent.itemId)
                                 }
                                 is MapChanged -> {
-                                    questSteps.remove(questSteps.lastOrNull {
+                                    currentRunningQuestSteps.remove(currentRunningQuestSteps.lastOrNull {
                                         it is WarpToId && it.mapId == gameEvent.sourceMapId
                                     })
                                 }
@@ -78,8 +79,8 @@ class AutoQuestController : Controller() {
         tsFunction.gameEventPublisher
                 .observeOn(JavaFxScheduler.getInstance())
                 .subscribe { gameEvent ->
-                    if (currentStep.get() >= 0 && currentStep.get() < questSteps.size) {
-                        val questStep = questSteps[currentStep.get()]
+                    if (currentStep.get() >= 0 && currentStep.get() < currentRunningQuestSteps.size) {
+                        val questStep = currentRunningQuestSteps[currentStep.get()]
                         val tsChar = tsFunction.tsChar
                         println("${System.currentTimeMillis()} Game event $questStep $gameEvent ${tsChar.mapId.get()} ${tsChar.x.get()} ${tsChar.y.get()}")
                         when (gameEvent) {
@@ -145,20 +146,15 @@ class AutoQuestController : Controller() {
                                 if (questStep !is PickItemWithId) {
                                     val dialogType = gameEvent.dialogType.toInt()
                                     if (dialogType != 0x6 && dialogType != 0x0) {
-                                        if (dialogType == 0x5) {
-                                            tsFunction.sendConfirmation(15000)
+                                        if (dialogType == 0x5) {//Animation will happens -> should wait
+                                            tsFunction.sendConfirmation(20000)
                                         } else {
-                                            tsFunction.sendConfirmation()
+                                            tsFunction.sendConfirmation(400)
                                         }
+                                    } else if (dialogType == 0x0) {
+                                        tsFunction.enqueueSendEnd(4)
                                     }
                                 }
-                            }
-
-                            is SendEndRequired -> {
-                                tsFunction.sendConfirmation()
-//                                if (gameEvent.type == 2) {
-//                                    proceedToNextStep()
-//                                }
                             }
 
                             is TalkFinished -> {
@@ -184,7 +180,7 @@ class AutoQuestController : Controller() {
         val questInfoFile = File(questFolder, "NPCInfo.ini")
         val questOrderFile = File(questFolder, "NPCBatch.ini")
         println("Load quest from $questInfoFile")
-        questSteps.clear()
+        currentRunningQuestSteps.clear()
         val questInfoLine = questOrderFile.readLines()[0]
         val questInfos = questInfoLine.split("=")
         questNameProperty.set(questInfos[0])
@@ -211,10 +207,10 @@ class AutoQuestController : Controller() {
                 y = coordinates[1].toInt()
             }
             val questStep = when {
-                warpType == 1 -> WarpToId(stepMapId, x, y, warpId, choiceId)
-                warpType == 4 -> SpecialWarpToId(stepMapId, x, y, warpId, choiceId)
-                itemId != 0 -> PickItemWithId(stepMapId, x, y, itemId)
-                npcId != 0 -> TalkToNpc(stepMapId, x, y, npcId, choiceId)
+                warpType == 1 -> WarpToId(stepMapId, x, y, warpId, choiceId, stepName)
+                warpType == 4 -> SpecialWarpToId(stepMapId, x, y, warpId, choiceId, stepName)
+                itemId != 0 -> PickItemWithId(stepMapId, x, y, itemId, stepName)
+                npcId != 0 -> TalkToNpc(stepMapId, x, y, npcId, choiceId, stepName)
                 else -> null
             }
             questStep?.let {
@@ -223,7 +219,7 @@ class AutoQuestController : Controller() {
         }
         for (stepName in questStepsOrder) {
             mapQuestInfo[stepName]?.let {
-                questSteps += it
+                currentRunningQuestSteps += it
             }
         }
 
@@ -234,7 +230,7 @@ class AutoQuestController : Controller() {
         val npcBatchFile = File(questDirectory, "NPCBatch.ini")
         val npcBatchBuilder = StringBuilder()
         npcBatchBuilder.append("${questNameProperty.get()}=")
-        for (questStep in questSteps) {
+        for (questStep in currentRunningQuestSteps) {
             when (questStep) {
                 is TalkToNpc -> {
                     npcInfoFile.writeText("${questStep.customName}=${questStep.mapId}=${questStep.npcId}=${questStep.x},${questStep.y}=0=0=${questStep.choiceId ?: 0}=0\n")
@@ -270,8 +266,8 @@ class AutoQuestController : Controller() {
     }
 
     fun deleteQuestAtIndex(selectedIndex: Int) {
-        if (selectedIndex >= 0 && selectedIndex < questSteps.size) {
-            questSteps.removeAt(selectedIndex)
+        if (selectedIndex >= 0 && selectedIndex < currentRunningQuestSteps.size) {
+            currentRunningQuestSteps.removeAt(selectedIndex)
         }
     }
 }

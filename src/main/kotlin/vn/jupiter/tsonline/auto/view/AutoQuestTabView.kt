@@ -59,7 +59,7 @@ class AutoQuestTabView : View("") {
 
             }
         }
-        listview(controller.questSteps) {
+        listview(controller.currentRunningQuestSteps) {
             cellFormat {
                 controller.currentStep.onChange {
                     if (isSelected) {
